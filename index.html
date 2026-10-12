@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>いまここハザード</title>
+<meta name="description" content="今いる場所の洪水・土砂災害・津波・高潮のリスクを、国土地理院のハザードマップで確認できる地図。">
+<meta name="theme-color" content="#f5f4ef">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+/* Layout: one-screen map app. Top bar (name + search), map in the middle, a bottom sheet that answers "how risky is the spot I'm on". */
+:root {
+  --bg: #f5f4ef;
+  --surface: #ffffff;
+  --fg: #1c2220;
+  --muted: #5e6763;
+  --line: #dcdcd4;
+  --accent: #1667c4;
+  --sev0: #2b7a4b;
+  --sev0-bg: #e3f1e8;
+  --sev1: #8a6d00;
+  --sev1-bg: #fbf2cc;
+  --sev2: #a85400;
+  --sev2-bg: #fde8d2;
+  --sev3: #b3261e;
+  --sev3-bg: #fbe2df;
+  --font: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic", "Noto Sans JP", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141716; --surface: #1d2220; --fg: #e8ece9; --muted: #a2aba6; --line: #303835; --accent: #6aa8ff;
+    --sev0: #86d3a4; --sev0-bg: #17301f; --sev1: #f0d36a; --sev1-bg: #332a0c; --sev2: #ffb066; --sev2-bg: #3a2410;
+    --sev3: #ff8f86; --sev3-bg: #3d1c19; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 15px; line-height: 1.55; }
+#app { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.bar { display: flex; gap: 10px; align-items: center; padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px; background: var(--surface); border-bottom: 1px solid var(--line); position: relative; z-index: 1001; }
+.brand { font-weight: 700; font-size: 1rem; white-space: nowrap; }
+#search { flex: 1; min-width: 0; display: flex; }
+#q { width: 100%; min-width: 0; font: inherit; padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+#q:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#results { position: absolute; left: 12px; right: 12px; top: 100%; margin-top: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; list-style: none; padding: 4px; max-height: 50vh; overflow: auto; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+#results button { width: 100%; text-align: left; border: 0; background: none; color: var(--fg); font: inherit; padding: 10px 12px; border-radius: 8px; cursor: pointer; }
+#results button:hover { background: var(--bg); }
+.mapwrap { position: relative; min-height: 0; }
+#map { position: absolute; inset: 0; background: #e9e8e2; }
+.fabs { position: absolute; right: 12px; top: 12px; display: grid; gap: 8px; z-index: 1000; }
+.fab { min-width: 48px; height: 48px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font: inherit; font-size: 0.82rem; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.18); display: grid; place-items: center; }
+.fab.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+#layers { position: absolute; right: 12px; top: 124px; z-index: 1000; width: min(300px, calc(100% - 24px)); max-height: calc(100% - 136px); overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; box-shadow: 0 6px 20px rgba(0,0,0,.2); display: grid; gap: 10px; font-size: 0.88rem; }
+#layers h2 { font-size: 0.95rem; margin: 0; }
+#layers label { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+#layers input { width: 18px; height: 18px; }
+.scale { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 3px; font-size: 0.68rem; color: var(--muted); text-align: center; }
+.scale i { display: block; height: 10px; border-radius: 3px; margin-bottom: 2px; }
+.sw { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 6px; }
+.fine { color: var(--muted); font-size: 0.78rem; margin: 0; }
+.fine a { color: inherit; }
+#sheet { background: var(--surface); border-top: 1px solid var(--line); padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 12px); display: grid; gap: 10px; max-height: 46vh; overflow: auto; position: relative; z-index: 1001; }
+.where { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.where .tag { font-size: 0.75rem; font-weight: 700; color: #fff; background: var(--accent); border-radius: 999px; padding: 1px 10px; }
+.where .tag.pin { background: #6b4fbb; }
+.where b { font-size: 1.05rem; }
+.where small { color: var(--muted); font-size: 0.78rem; }
+#headline { margin: 0; font-size: 1.05rem; font-weight: 700; text-wrap: balance; }
+#rows { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+#rows li { border-radius: 10px; padding: 8px 10px; background: var(--bg); display: grid; gap: 2px; min-width: 0; }
+#rows .k { font-size: 0.78rem; color: var(--muted); font-weight: 700; }
+#rows .v { font-weight: 700; font-size: 0.95rem; overflow-wrap: anywhere; }
+#rows .n { font-size: 0.74rem; color: var(--muted); }
+#rows li.s0 { background: var(--sev0-bg); } #rows li.s0 .v { color: var(--sev0); }
+#rows li.s1 { background: var(--sev1-bg); } #rows li.s1 .v { color: var(--sev1); }
+#rows li.s2 { background: var(--sev2-bg); } #rows li.s2 .v { color: var(--sev2); }
+#rows li.s3 { background: var(--sev3-bg); } #rows li.s3 .v { color: var(--sev3); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.btn { font: inherit; font-weight: 700; border-radius: 999px; padding: 10px 18px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+.actions a { color: var(--accent); font-size: 0.85rem; }
+.me-dot { width: 18px; height: 18px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25), 0 1px 4px rgba(0,0,0,.4); }
+.leaflet-container { font-family: var(--font); }
+@media (min-width: 900px) {
+  #app { grid-template-columns: minmax(0,1fr) 380px; grid-template-rows: auto minmax(0,1fr); }
+  .bar { grid-column: 1 / -1; }
+  #sheet { grid-row: 2; grid-column: 2; max-height: none; border-top: 0; border-left: 1px solid var(--line); align-content: start; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="bar">
+    <div class="brand">いまここハザード</div>
+    <form id="search" role="search" autocomplete="off">
+      <input id="q" type="search" placeholder="住所・地名で探す" aria-label="住所・地名で探す" enterkeyhint="search">
+    </form>
+    <ul id="results" hidden></ul>
+  </header>
+
+  <div class="mapwrap">
+    <div id="map" aria-label="ハザードマップ"></div>
+    <div class="fabs">
+      <button class="fab" id="btnLocate" aria-label="現在地を表示して追いかける">現在地</button>
+      <button class="fab" id="btnLayers" aria-expanded="false" aria-controls="layers">表示</button>
+    </div>
+    <div id="layers" hidden>
+      <h2>地図に表示する</h2>
+      <label><input type="checkbox" id="L-flood" checked>洪水(川の氾濫)</label>
+      <label><input type="checkbox" id="L-dosha" checked>土砂災害(がけ崩れ・土石流・地すべり)</label>
+      <label><input type="checkbox" id="L-tsunami">津波</label>
+      <label><input type="checkbox" id="L-tide">高潮</label>
+      <div>
+        <p class="fine" style="margin-bottom:4px">浸水の深さ</p>
+        <div class="scale">
+          <div><i style="background:#f7f5a9"></i>〜0.5m</div>
+          <div><i style="background:#ffd8c0"></i>〜3m</div>
+          <div><i style="background:#ffb7b7"></i>〜5m</div>
+          <div><i style="background:#ff9191"></i>〜10m</div>
+          <div><i style="background:#f285c9"></i>〜20m</div>
+          <div><i style="background:#dc7adc"></i>20m〜</div>
+        </div>
+      </div>
+      <div class="fine"><span class="sw" style="background:#fae600"></span>土砂災害警戒区域　<span class="sw" style="background:#fa2800"></span>特別警戒区域</div>
+      <p class="fine">浸水は想定最大規模(1000年に1度程度の大雨など)。下水があふれる内水は含みません。データが整備されていない地域もあります。最終的な確認は自治体のハザードマップで。</p>
+      <p class="fine">出典: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院 地理院タイル</a>、<a href="https://disaportal.gsi.go.jp/hazardmapportal/hazardmap/copyright/opendata.html" target="_blank" rel="noopener">ハザードマップポータルサイト</a>。位置情報は、国土地理院から地図・ハザード・地名のデータを取ってくるためだけに使い、ほかには送りません。</p>
+    </div>
+  </div>
+
+  <section id="sheet" aria-live="polite">
+    <div class="where"><span class="tag" id="whereTag">現在地</span><b id="placeName">まだ取得していません</b><small id="acc"></small></div>
+    <p id="headline">「現在地を表示」を押すと、今いる場所の危険度がここに出ます。地図を押すと、その場所も調べられます。</p>
+    <ul id="rows">
+      <li id="r-flood"><span class="k">洪水</span><span class="v">—</span><span class="n"></span></li>
+      <li id="r-dosha"><span class="k">土砂災害</span><span class="v">—</span><span class="n"></span></li>
+      <li id="r-tsunami"><span class="k">津波</span><span class="v">—</span><span class="n"></span></li>
+      <li id="r-tide"><span class="k">高潮</span><span class="v">—</span><span class="n"></span></li>
+    </ul>
+    <div class="actions">
+      <button class="btn" id="btnStart">現在地を表示</button>
+      <button class="btn ghost" id="btnBack" hidden>現在地に戻る</button>
+      <a id="gsiLink" href="https://disaportal.gsi.go.jp/" target="_blank" rel="noopener">重ねるハザードマップで詳しく見る</a>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  var DATA = "https://disaportaldata.gsi.go.jp/raster/";
+  var LAYERS = {
+    flood: { name: "洪水", paths: ["01_flood_l2_shinsuishin_data"] },
+    dosha: { name: "土砂災害", paths: ["05_kyukeishakeikaikuiki", "05_dosekiryukeikaikuiki", "05_jisuberikeikaikuiki"], kinds: ["がけ崩れ", "土石流", "地すべり"] },
+    tsunami: { name: "津波", paths: ["04_tsunami_newlegend_data"] },
+    tide: { name: "高潮", paths: ["03_hightide_l2_shinsuishin_data"] }
+  };
+  var FLOOD = [[247,245,169,"0.5m未満",1],[255,216,192,"0.5〜3m",2],[255,183,183,"3〜5m",3],[255,145,145,"5〜10m",3],[242,133,201,"10〜20m",3],[220,122,220,"20m以上",3]];
+  var WAVE = [[255,255,179,"0.3m未満",1],[247,245,169,"0.3〜0.5m",1],[248,225,166,"0.5〜1m",2],[255,216,192,"1〜3m",2],[255,183,183,"3〜5m",3],[255,145,145,"5〜10m",3],[242,133,201,"10〜20m",3],[220,122,220,"20m以上",3]];
+  var TABLE = { flood: FLOOD, tsunami: WAVE, tide: WAVE };
+  var Z = 17;
+
+  var map = L.map("map", { zoomControl: false, attributionControl: true }).setView([36.2, 138.0], 5);
+  map.attributionControl.setPrefix(false);
+  L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png", {
+    maxZoom: 18, minZoom: 5, attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a> | <a href="https://disaportal.gsi.go.jp/" target="_blank" rel="noopener">ハザードマップポータル</a>'
+  }).addTo(map);
+  L.control.zoom({ position: "bottomleft" }).addTo(map);
+
+  var overlay = {};
+  Object.keys(LAYERS).forEach(function (k) {
+    overlay[k] = L.layerGroup(LAYERS[k].paths.map(function (p) {
+      return L.tileLayer(DATA + p + "/{z}/{x}/{y}.png", { opacity: 0.7, maxNativeZoom: 17, maxZoom: 18, minZoom: 5 });
+    }));
+    var box = document.getElementById("L-" + k);
+    if (box.checked) overlay[k].addTo(map);
+    box.addEventListener("change", function () { if (box.checked) overlay[k].addTo(map); else map.removeLayer(overlay[k]); });
+  });
+
+  var btnLayers = document.getElementById("btnLayers"), layersEl = document.getElementById("layers");
+  btnLayers.addEventListener("click", function () {
+    layersEl.hidden = !layersEl.hidden;
+    btnLayers.setAttribute("aria-expanded", String(!layersEl.hidden));
+    btnLayers.classList.toggle("on", !layersEl.hidden);
+  });
+
+  var cache = new Map();
+  function tile(path, x, y) {
+    var key = path + "/" + x + "/" + y;
+    if (!cache.has(key)) {
+      cache.set(key, fetch(DATA + path + "/" + Z + "/" + x + "/" + y + ".png").then(function (r) {
+        if (!r.ok) return null;
+        return r.blob().then(createImageBitmap).then(function (bm) {
+          var c = document.createElement("canvas"); c.width = 256; c.height = 256;
+          var g = c.getContext("2d", { willReadFrequently: true }); g.drawImage(bm, 0, 0);
+          return g.getImageData(0, 0, 256, 256).data;
+        });
+      }).catch(function () { cache.delete(key); return undefined; }));
+      if (cache.size > 300) cache.delete(cache.keys().next().value);
+    }
+    return cache.get(key);
+  }
+  function globalPx(lat, lng) {
+    var n = Math.pow(2, Z) * 256, r = lat * Math.PI / 180;
+    return [(lng + 180) / 360 * n, (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n];
+  }
+  function sample(path, gx, gy) {
+    var x = Math.floor(gx / 256), y = Math.floor(gy / 256);
+    return tile(path, x, y).then(function (d) {
+      if (d === undefined) return undefined;
+      if (!d) return null;
+      var i = ((Math.floor(gy) - y * 256) * 256 + (Math.floor(gx) - x * 256)) * 4;
+      return d[i + 3] > 0 ? [d[i], d[i + 1], d[i + 2]] : null;
+    });
+  }
+  function nearest(rgb, table) {
+    var best = null, bd = Infinity;
+    table.forEach(function (t) { var d = Math.pow(rgb[0] - t[0], 2) + Math.pow(rgb[1] - t[1], 2) + Math.pow(rgb[2] - t[2], 2); if (d < bd) { bd = d; best = t; } });
+    return bd < 2500 ? { label: best[3], sev: best[4] } : { label: "区域内", sev: 2 };
+  }
+  function classify(key, idx, rgb) {
+    if (key === "dosha") {
+      var special = rgb[1] < 120;
+      return { label: (special ? "特別警戒区域" : "警戒区域"), sev: special ? 3 : 2, kind: LAYERS.dosha.kinds[idx] };
+    }
+    return nearest(rgb, TABLE[key]);
+  }
+  var RING = (function () {
+    var pts = []; for (var r = 6; r <= 30; r += 6) for (var a = 0; a < 360; a += 30) pts.push([r * Math.cos(a * Math.PI / 180), r * Math.sin(a * Math.PI / 180)]);
+    return pts;
+  })();
+  function checkHazard(key, lat, lng) {
+    var paths = LAYERS[key].paths, g = globalPx(lat, lng);
+    var mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, Z);
+    return Promise.all(paths.map(function (p, idx) {
+      return sample(p, g[0], g[1]).then(function (rgb) {
+        if (rgb === undefined) return { err: true };
+        if (rgb) return { hit: classify(key, idx, rgb) };
+        return Promise.all(RING.map(function (o) { return sample(p, g[0] + o[0] / mpp, g[1] + o[1] / mpp); })).then(function (arr) {
+          return { near: arr.some(function (v) { return v; }), err: arr.every(function (v) { return v === undefined; }) };
+        });
+      });
+    })).then(function (res) {
+      var hits = res.filter(function (r) { return r.hit; }).map(function (r) { return r.hit; });
+      if (hits.length) {
+        hits.sort(function (a, b) { return b.sev - a.sev; });
+        var top = hits[0];
+        var label = top.label;
+        if (key === "dosha") label = hits.map(function (h) { return h.kind; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).join("・") + "の" + top.label;
+        else label = label === "区域内" ? "浸水想定区域内" : label + "の浸水想定";
+        return { sev: top.sev, label: label };
+      }
+      if (res.every(function (r) { return r.err; })) return { sev: -1, label: "読み込めませんでした" };
+      if (res.some(function (r) { return r.near; })) return { sev: 0, label: "想定なし", note: "30m以内に区域あり" };
+      return { sev: 0, label: "想定なし" };
+    });
+  }
+
+  var whereTag = document.getElementById("whereTag"), placeName = document.getElementById("placeName"), accEl = document.getElementById("acc");
+  var headline = document.getElementById("headline"), gsiLink = document.getElementById("gsiLink");
+  var checkSeq = 0;
+  function check(lat, lng) {
+    var seq = ++checkSeq;
+    headline.textContent = "調べています…";
+    gsiLink.href = "https://disaportal.gsi.go.jp/hazardmap/maps/index.html?ll=" + lat.toFixed(6) + "," + lng.toFixed(6) + "&z=16&base=pale";
+    fetch("https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress?lat=" + lat + "&lon=" + lng)
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (seq === checkSeq) placeName.textContent = (j && j.results && j.results.lv01Nm && j.results.lv01Nm !== "－") ? j.results.lv01Nm + " 付近" : "地名なし"; })
+      .catch(function () { if (seq === checkSeq) placeName.textContent = lat.toFixed(5) + ", " + lng.toFixed(5); });
+    var keys = Object.keys(LAYERS);
+    Promise.all(keys.map(function (k) { return checkHazard(k, lat, lng); })).then(function (out) {
+      if (seq !== checkSeq) return;
+      var max = -1, highs = [], mids = [], anyNear = false, errs = 0;
+      out.forEach(function (o, i) {
+        var li = document.getElementById("r-" + keys[i]);
+        li.className = o.sev >= 0 ? "s" + o.sev : "";
+        li.querySelector(".v").textContent = o.label;
+        li.querySelector(".n").textContent = o.note || "";
+        if (o.sev > max) max = o.sev;
+        if (o.sev === 3) highs.push(LAYERS[keys[i]].name);
+        if (o.sev === 2 || o.sev === 1) mids.push(LAYERS[keys[i]].name);
+        if (o.note) anyNear = true;
+        if (o.sev < 0) errs++;
+      });
+      if (errs === keys.length) headline.textContent = "データを読み込めませんでした。通信状態を確認してください。";
+      else if (max === 3) headline.textContent = "危険度が高い想定があります(" + highs.join("・") + ")";
+      else if (max >= 1) headline.textContent = "注意が必要な想定があります(" + mids.join("・") + ")";
+      else if (anyNear) headline.textContent = "この地点は区域外ですが、すぐ近くに区域があります";
+      else headline.textContent = "この地点に、洪水・土砂災害・津波・高潮の想定はありません";
+    });
+  }
+
+  var meMarker = null, accCircle = null, pinMarker = null, watchId = null, follow = false, mode = "me", me = null, lastChecked = null, firstFix = true;
+  var btnLocate = document.getElementById("btnLocate"), btnStart = document.getElementById("btnStart"), btnBack = document.getElementById("btnBack");
+  function setFollow(v) { follow = v; btnLocate.classList.toggle("on", v); }
+  function dist(a, b) { return map.distance(a, b); }
+  function onPos(p) {
+    var ll = L.latLng(p.coords.latitude, p.coords.longitude), acc = p.coords.accuracy;
+    me = ll;
+    if (!meMarker) {
+      accCircle = L.circle(ll, { radius: acc, color: "#1a73e8", weight: 1, fillColor: "#1a73e8", fillOpacity: 0.12, interactive: false }).addTo(map);
+      meMarker = L.marker(ll, { icon: L.divIcon({ className: "", html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), interactive: false, keyboard: false }).addTo(map);
+    } else { meMarker.setLatLng(ll); accCircle.setLatLng(ll).setRadius(acc); }
+    if (follow) map.setView(ll, firstFix ? 16 : Math.max(map.getZoom(), 14), { animate: !firstFix });
+    firstFix = false;
+    btnStart.hidden = true;
+    if (mode === "me") {
+      accEl.textContent = "誤差 約" + Math.round(acc) + "m" + (acc > 100 ? "(大きめ)" : "");
+      if (!lastChecked || dist(lastChecked, ll) > 15) { lastChecked = ll; check(ll.lat, ll.lng); }
+    }
+  }
+  function onErr(e) {
+    var msg = e.code === 1 ? "位置情報が許可されていません。ブラウザやスマホの設定で、このサイトの位置情報を許可してください。"
+      : e.code === 3 ? "現在地の取得に時間がかかっています。屋外や窓の近くで試してください。" : "現在地を取得できませんでした。";
+    if (e.code === 1 || !me) { headline.textContent = msg; setFollow(false); }
+    if (e.code === 1 && watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  }
+  function startWatch() {
+    if (!("geolocation" in navigator)) { headline.textContent = "このブラウザは位置情報に対応していません。"; return; }
+    if (watchId === null) {
+      headline.textContent = "現在地を取得しています…";
+      watchId = navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+    }
+  }
+  function backToMe() {
+    mode = "me"; whereTag.textContent = "現在地"; whereTag.classList.remove("pin"); btnBack.hidden = true;
+    if (pinMarker) { map.removeLayer(pinMarker); pinMarker = null; }
+    setFollow(true); startWatch();
+    if (me) { map.setView(me, Math.max(map.getZoom(), 16)); lastChecked = me; accEl.textContent = ""; check(me.lat, me.lng); }
+  }
+  btnLocate.addEventListener("click", backToMe);
+  btnStart.addEventListener("click", backToMe);
+  btnBack.addEventListener("click", backToMe);
+  map.on("dragstart", function () { setFollow(false); });
+
+  function inspect(ll, label) {
+    mode = "pin"; setFollow(false);
+    whereTag.textContent = label || "選んだ地点"; whereTag.classList.add("pin"); accEl.textContent = "";
+    btnBack.hidden = false; btnStart.hidden = !!watchId || btnStart.hidden;
+    if (!pinMarker) pinMarker = L.marker(ll).addTo(map); else pinMarker.setLatLng(ll);
+    check(ll.lat, ll.lng);
+  }
+  map.on("click", function (e) { inspect(e.latlng); });
+
+  var form = document.getElementById("search"), q = document.getElementById("q"), results = document.getElementById("results");
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var text = q.value.trim(); if (!text) return;
+    results.hidden = false; results.innerHTML = "<li style='padding:10px 12px;color:var(--muted)'>探しています…</li>";
+    fetch("https://msearch.gsi.go.jp/address-search/AddressSearch?q=" + encodeURIComponent(text))
+      .then(function (r) { return r.json(); })
+      .then(function (list) {
+        results.innerHTML = "";
+        if (!list.length) { results.innerHTML = "<li style='padding:10px 12px;color:var(--muted)'>見つかりませんでした</li>"; return; }
+        list.slice(0, 8).forEach(function (f) {
+          var li = document.createElement("li"), b = document.createElement("button");
+          b.type = "button"; b.textContent = f.properties.title;
+          b.addEventListener("click", function () {
+            var ll = L.latLng(f.geometry.coordinates[1], f.geometry.coordinates[0]);
+            results.hidden = true; q.blur();
+            map.setView(ll, 16); inspect(ll, "検索した場所");
+          });
+          li.appendChild(b); results.appendChild(li);
+        });
+      })
+      .catch(function () { results.innerHTML = "<li style='padding:10px 12px;color:var(--muted)'>検索できませんでした</li>"; });
+  });
+  document.addEventListener("click", function (e) { if (!results.hidden && !document.querySelector(".bar").contains(e.target)) results.hidden = true; });
+
+  new ResizeObserver(function () { map.invalidateSize(); }).observe(document.getElementById("map"));
+
+  if (navigator.permissions && navigator.permissions.query) {
+    navigator.permissions.query({ name: "geolocation" }).then(function (s) { if (s.state === "granted") backToMe(); }).catch(function () {});
+  }
+})();
+</script>
+</body>
+</html>
